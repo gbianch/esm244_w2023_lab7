@@ -1,0 +1,121 @@
+---
+title: 'Lab 7 : wrangling & visualizing spatial data'
+author: "Grace Bianchi"
+date: "2023-02-23"
+output: html_document
+---
+
+```{r setup, include=TRUE, message = FALSE, warning = FALSE, echo = TRUE}
+knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE)
+
+library(tidyverse)
+library(here)
+library(broom)
+
+### spatial data packages
+library(sf) # simple features
+library(tmap)
+```
+
+
+## Read in CA county outlines
+
+```{r}
+ca_counties_sf <- read_sf(here('data/ca_counties/CA_counties_TIGER2016.shp')) # read vector data into simple features 
+
+ca_subset_sf <- ca_counties_sf %>% # vector file
+  janitor::clean_names() %>% 
+  select(county_name = name, land_area = aland) # geometry column is still included
+
+ca_subset_df <- ca_subset_sf %>% 
+  as.data.frame() %>% 
+  select(-geometry)
+```
+
+
+## Check and set the CRS
+
+```{r}
+ca_subset_sf %>%  st_crs()
+
+ggplot() + 
+  geom_sf(data = ca_subset_sf, aes(fill = land_area),
+          color = "white", size = 0.1) +
+  scale_fill_gradientn(colors = c("cyan", "dodgerblue", "purple2"))+ # makes gradient given two colors
+  theme_void() # removes axes
+```
+
+```{r}
+sesbania_sf <- read_sf(here('data/red_sesbania/ds80.shp')) %>% 
+  janitor::clean_names()
+
+sesbania_sf %>% st_crs()
+
+sesbania_3857_sf <- st_transform(sesbania_sf, 3857) # setting same crs as other data set
+
+```
+
+## Plot Sesbania and CA counties 
+
+```{r}
+ggplot() +
+  geom_sf(data = ca_subset_sf, fill = "grey20") +
+  geom_sf(data = sesbania_3857_sf, size = 1, color = "red")
+```
+
+## Spatial join
+
+```{r}
+ca_sesb_sf <- ca_subset_sf %>% 
+  st_join(sesbania_3857_sf) 
+
+sesb_counts_sf <- ca_sesb_sf %>% 
+  group_by(county_name) %>% 
+  summarize(n_records = sum(!is.na(id))) # don't count records where id = NA
+
+```
+
+
+### Plot the results
+
+"Choropleth" map
+
+```{r}
+ggplot(data = sesb_counts_sf) +
+  geom_sf(aes(fill = n_records), color = "grey20", size = 0.1) +
+  scale_fill_gradientn(colors = c("lightgrey", "orange", "red"))
+
+ggplot(data = sesb_counts_sf %>% 
+         mutate(n_records =ifelse(n_records == 0, NA, n_records))) +
+  geom_sf(data = sesbania_3857_sf,  color = "blue") +
+  geom_sf(aes(fill = n_records), color = "grey20", size = 0.1, alpha = 0.4) +
+  scale_fill_gradientn(colors = c("yellow", "orange", "red"), na.value= "grey90")
+```
+
+## Plot just the points in Solano County
+
+```{r}
+solano_sesb_sf <- sesbania_3857_sf %>% 
+  filter(county == "Solano")
+
+solano_sf <- ca_subset_sf %>% 
+  filter(county_name == "Solano")
+
+ggplot() +
+  geom_sf(data = solano_sf) +
+  geom_sf(data = solano_sesb_sf, color = "red")
+```
+
+## Interactive map
+
+```{r}
+### set tmap interactive mode
+tmap_mode("view") 
+
+tm_shape(ca_subset_sf) +
+  tm_fill("land_area", palette = "BuGn") + #fill ca_subset_sf shape
+  tm_shape(sesbania_sf) +
+  tm_dots()
+
+```
+
