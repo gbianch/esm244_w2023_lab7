@@ -1,0 +1,143 @@
+---
+title: "Lab 7 Part 2"
+author: "Grace Bianchi"
+date: "2023-02-23"
+output: html_document
+---
+
+```{r setup, include= TRUE, echo = TRUE, message = FALSE, warning = FALSE}
+knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE)
+
+library(tidyverse)
+library(here)
+library(sf)
+library(tmap)
+library(gstat)
+library(stars)
+
+```
+
+
+```{r}
+## Read in CA depth to groundwater data
+ca_counties_sf <- read_sf(here("data/ca_counties"),
+                       layer = "CA_Counties_TIGER2016") %>% 
+  janitor::clean_names() %>% 
+  select(name)
+
+# st_crs(ca_counties_sf)
+
+
+# gpkg has same data as shp file ,but its more compress
+ca_dgw_sf <- read_sf(here("data/ca_dgw/F2013_DBGS_Points_20150720_093252.gpkg")) %>% 
+  janitor::clean_names()
+
+# st_crs(ca_dgw_sf)
+
+
+### Transform DGW data to same CRS as CA counties
+ca_dgw_sf <- st_transform(ca_dgw_sf, st_crs(ca_counties_sf))
+```
+
+
+#### Make a quick ggplot
+
+```{r}
+ggplot() +
+  geom_sf(data = ca_counties_sf) +
+  geom_sf(data = ca_dgw_sf, aes(color = dgbs), size = 0.1) +
+  scale_color_gradient(low = "lightpink", high = "dodgerblue")
+
+tmap_mode('view')
+tm_shape(ca_dgw_sf) +
+  tm_dots("dgbs", palette = "Blues")
+
+library(shinyjs)
+# tmaptools::palette_explorer()
+```
+
+## Wrangle to just San Joaquin County
+
+```{r}
+sj_county_sf <- ca_counties_sf %>% 
+  filter(name %in% "San Joaquin")
+
+sj_depth_sf <- ca_dgw_sf %>% 
+  # only observations in san joquin county, uses geometry (more robust) compared to filtering
+  st_intersection(sj_county_sf)
+
+ggplot() +
+  geom_sf(data = sj_county_sf) +
+  geom_sf(data = sj_depth_sf, aes(color = dgbs)) +
+  theme_void() +
+  scale_color_viridis_c()
+
+```
+
+## Seting up for kriging
+
+```{r}
+# how different are wells within given range in 
+# need to remove duplicates for kringing
+well_duplicates <- sj_depth_sf %>% 
+  janitor::get_dupes(latitude, longitude)
+
+sj_depth_sf <- sj_depth_sf %>% 
+  filter(!local_well %in% well_duplicates$local_well)
+
+```
+
+## Make a variogram!
+
+```{r}
+sj_dgw_vgm <- gstat::variogram(dgbs ~ 1, data = sj_depth_sf)
+
+plot(sj_dgw_vgm)
+# well depth changes gradually with distance
+# amount of variation with depth is small
+
+
+# create a model to use variogram to create mathematical model
+sj_dgw_vgm_fit <- fit.variogram(sj_dgw_vgm,
+                                model = vgm(model = "Gau",
+                                nugget = 20,
+                                sill = 5000, # where it tapers off
+                               range = 30000))
+
+
+plot(sj_dgw_vgm, sj_dgw_vgm_fit)
+
+attr(sj_dgw_vgm_fit, "SSErr")
+```
+
+## Spatial Kriging
+
+```{r}
+# grid of 1 km squares across sj county
+sj_grid <- st_bbox(sj_county_sf)  %>% # creating an extent to work
+  stars::st_as_stars(dx = 1000, dy = 1000) %>% 
+  st_crop(sj_county_sf)
+
+plot(sj_grid) # pixelated version of sj county
+
+# interpolate values for all empty squares using surrounding data 
+
+sj_dgw_krige <- krige(dgbs ~ 1, sj_depth_sf, sj_grid,
+                      model = sj_dgw_vgm_fit)
+
+# predicting variable depth
+plot(sj_dgw_krige)
+
+krige_df <- as.data.frame(sj_dgw_krige) %>% 
+  st_as_sf(coords = c("x", "y")) %>% 
+  drop_na(var1.pred) 
+
+st_crs(krige_df) <- 3857
+
+
+ggplot(data = krige_df) +
+  geom_sf(aes(color = var1.pred)) +
+  scale_color_gradient(low = "blue", high = "yellow")
+
+```
+
